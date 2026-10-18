@@ -1,0 +1,13 @@
+{
+  "followed_dynamic_types": [
+    "DYNAMIC_TYPE_AV",
+    "DYNAMIC_TYPE_DRAW"
+  ],
+  "check_interval_minutes": 1,
+  "followed_mids": [],
+  "close_behavior": "tray",
+  "sound_enabled": true,
+  "sound_mode": "system",
+  "system_sound": "asterisk",
+  "sound_file": ""
+}
