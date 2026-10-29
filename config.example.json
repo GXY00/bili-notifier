@@ -9,5 +9,5 @@
   "sound_enabled": true,
   "sound_mode": "system",
   "system_sound": "asterisk",
-  "sound_file": ""
+  "sound_files": []
 }

@@ -1,6 +1,7 @@
 """PySide6 desktop interface for Bilibili followed-dynamics monitoring."""
 
 import queue
+import random
 import sys
 import threading
 import time
@@ -26,6 +27,7 @@ from bilibili_followed_dynamics import (
     load_config, save_config,
 )
 from dynamic_monitor import format_dynamic_result
+from config_store import normalise_sound_files
 from startup_manager import is_startup_enabled, set_startup_enabled
 
 
@@ -340,6 +342,13 @@ class BilibiliMonitorApp(QMainWindow):
         title = QLabel("设置")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_content = QWidget()
+        settings_layout = QVBoxLayout(settings_content)
+        settings_layout.setContentsMargins(0, 0, 8, 0)
+        settings_scroll.setWidget(settings_content)
+        layout.addWidget(settings_scroll, 1)
         group = QGroupBox("监控设置")
         group.setObjectName("settingsGroup")
         form = QGridLayout(group)
@@ -368,7 +377,7 @@ class BilibiliMonitorApp(QMainWindow):
         self.startup_check = QCheckBox("登录 Windows 后自动启动并隐藏到系统托盘")
         self.startup_check.setChecked(self.saved_startup_enabled)
         form.addWidget(self.startup_check, 3, 0, 1, 2)
-        layout.addWidget(group)
+        settings_layout.addWidget(group)
 
         sound_group = QGroupBox("声音提示")
         sound_group.setObjectName("settingsGroup")
@@ -387,22 +396,30 @@ class BilibiliMonitorApp(QMainWindow):
         self.system_sound_combo.addItems(tuple(SYSTEM_SOUND_LABELS.values()))
         self.system_sound_combo.setCurrentText(SYSTEM_SOUND_LABELS.get(self.config.get("system_sound"), SYSTEM_SOUND_LABELS["asterisk"]))
         sound_layout.addWidget(self.system_sound_combo, 2, 1)
-        self.sound_file_edit = QLineEdit(self.config.get("sound_file", ""))
-        self.sound_file_edit.setPlaceholderText("选择本地 .wav 文件")
-        self.sound_browse_button = QPushButton("选择 WAV")
-        self.sound_browse_button.clicked.connect(self.select_sound_file)
+        self.system_sound_test_button = QPushButton("测试声音")
+        self.system_sound_test_button.clicked.connect(self.test_sound)
+        sound_layout.addWidget(self.system_sound_test_button, 2, 2)
+        self.sound_file_list = QListWidget()
+        self.sound_file_list.setStyleSheet("QListWidget::item { padding: 0; }")
+        self.sound_file_list.setMinimumHeight(100)
+        self.sound_file_list.setMaximumHeight(150)
+        self.sound_file_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sound_browse_button = QPushButton("添加提示音")
+        self.sound_browse_button.clicked.connect(self.select_sound_files)
         sound_layout.addWidget(QLabel("WAV 文件"), 3, 0)
-        sound_layout.addWidget(self.sound_file_edit, 3, 1)
-        sound_layout.addWidget(self.sound_browse_button, 3, 2)
-        test_button = QPushButton("测试声音")
-        test_button.clicked.connect(self.test_sound)
-        sound_layout.addWidget(test_button, 4, 0)
-        sound_note = QLabel("每轮检查最多播放一次；WAV 无法播放时使用默认系统提示音。")
+        sound_layout.addWidget(self.sound_file_list, 3, 1, 1, 2)
+        sound_layout.addWidget(self.sound_browse_button, 4, 1)
+        self.random_sound_test_button = QPushButton("随机播放")
+        self.random_sound_test_button.clicked.connect(self.test_random_sound)
+        sound_layout.addWidget(self.random_sound_test_button, 4, 2)
+        sound_note = QLabel("每轮随机播放一个，可连续重复；文件失效或播放失败时使用默认提示音。仅记录原路径，请保留原文件。")
+        sound_note.setWordWrap(True)
         sound_note.setObjectName("muted")
-        sound_layout.addWidget(sound_note, 4, 1, 1, 2)
-        layout.addWidget(sound_group)
+        sound_layout.addWidget(sound_note, 5, 0, 1, 3)
+        settings_layout.addWidget(sound_group)
+        settings_layout.addStretch()
+        self.add_sound_files(self.config.get("sound_files", []))
 
-        layout.addStretch()
         save_button = QPushButton("保存设置")
         save_button.setObjectName("primaryButton")
         save_button.clicked.connect(self.save_settings)
@@ -508,29 +525,75 @@ class BilibiliMonitorApp(QMainWindow):
     def update_sound_controls(self):
         custom = self.sound_mode_combo.currentIndex() == 1
         self.system_sound_combo.setEnabled(not custom)
-        self.sound_file_edit.setEnabled(custom)
+        self.system_sound_test_button.setEnabled(not custom)
+        self.sound_file_list.setEnabled(custom)
         self.sound_browse_button.setEnabled(custom)
+        self.random_sound_test_button.setEnabled(custom and self.sound_file_list.count() > 0)
 
-    def select_sound_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择提示音", "", "WAV 音频 (*.wav)")
-        if path:
-            self.sound_file_edit.setText(str(Path(path).resolve()))
+    def select_sound_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "添加提示音", "", "WAV 音频 (*.wav)")
+        self.add_sound_files([str(Path(path).resolve()) for path in paths])
+
+    def sound_files_from_ui(self):
+        return [self.sound_file_list.item(index).data(Qt.ItemDataRole.UserRole)
+                for index in range(self.sound_file_list.count())]
+
+    def add_sound_files(self, paths):
+        current = self.sound_files_from_ui()
+        for path in normalise_sound_files(current + paths)[len(current):]:
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setToolTip(path)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(4, 2, 4, 2)
+            name = QLabel(Path(path).name)
+            name.setToolTip(path)
+            name.setMinimumWidth(0)
+            name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            row_layout.addWidget(name, 1)
+            play_button = QPushButton("播放")
+            play_button.clicked.connect(lambda _checked=False, file=path: self.test_sound_file(file))
+            row_layout.addWidget(play_button)
+            remove_button = QPushButton("移除")
+            remove_button.clicked.connect(lambda _checked=False, entry=item: self.remove_sound_file(entry))
+            row_layout.addWidget(remove_button)
+            self.sound_file_list.addItem(item)
+            self.sound_file_list.setItemWidget(item, row)
+            row.ensurePolished()
+            item.setSizeHint(row.sizeHint())
+        self.update_sound_controls()
+
+    def remove_sound_file(self, item):
+        self.sound_file_list.takeItem(self.sound_file_list.row(item))
+        self.update_sound_controls()
 
     def _sound_config_from_ui(self):
         return {
             "sound_enabled": self.sound_enabled_check.isChecked(),
             "sound_mode": "wav" if self.sound_mode_combo.currentIndex() == 1 else "system",
             "system_sound": SYSTEM_SOUND_KEYS.get(self.system_sound_combo.currentText(), "asterisk"),
-            "sound_file": self.sound_file_edit.text().strip(),
+            "sound_files": self.sound_files_from_ui(),
         }
 
     def test_sound(self):
         sound_config = self._sound_config_from_ui()
         sound_config["sound_enabled"] = True
+        sound_config["sound_mode"] = "system"
         self.play_notification_sound(sound_config)
 
-    def play_notification_sound(self, sound_config=None):
-        sound_config = sound_config or self.config
+    def test_random_sound(self):
+        sound_config = self._sound_config_from_ui()
+        sound_config.update(sound_enabled=True, sound_mode="wav")
+        self.play_notification_sound(sound_config)
+
+    def test_sound_file(self, path):
+        sound_config = self._sound_config_from_ui()
+        sound_config.update(sound_enabled=True, sound_mode="wav")
+        self.play_notification_sound(sound_config, sound_file=path)
+
+    def play_notification_sound(self, sound_config=None, sound_file=None):
+        sound_config = self.config if sound_config is None else sound_config
         if not sound_config.get("sound_enabled", True):
             return
         if winsound is None:
@@ -539,16 +602,20 @@ class BilibiliMonitorApp(QMainWindow):
             return
         fallback_to_default = False
         if sound_config.get("sound_mode") == "wav":
-            sound_file = sound_config.get("sound_file", "")
+            if sound_file is None:
+                available = [path for path in sound_config.get("sound_files", [])
+                             if Path(path).suffix.lower() == ".wav" and Path(path).is_file()]
+                sound_file = random.choice(available) if available else ""
             if sound_file and Path(sound_file).suffix.lower() == ".wav" and Path(sound_file).is_file():
                 try:
-                    winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
                     return
                 except (OSError, RuntimeError) as error:
-                    self.write_log(f"自定义 WAV 播放失败：{error}，已回退到默认系统提示音")
+                    self.write_log(f"自定义 WAV 播放失败（{sound_file}）：{error}，已回退到默认系统提示音")
                     fallback_to_default = True
             else:
-                self.write_log("自定义 WAV 文件不存在或格式不是 WAV，已回退到默认系统提示音")
+                reason = f"自定义 WAV 文件不存在或格式不是 WAV：{sound_file}" if sound_file else "提示音列表为空或没有可用的 WAV 文件"
+                self.write_log(f"{reason}，已回退到默认系统提示音")
                 fallback_to_default = True
         sound_types = {
             "asterisk": winsound.MB_ICONASTERISK,
@@ -557,6 +624,7 @@ class BilibiliMonitorApp(QMainWindow):
             "hand": winsound.MB_ICONHAND,
         }
         try:
+            winsound.PlaySound(None, 0)
             system_sound = "asterisk" if fallback_to_default else sound_config.get("system_sound", "asterisk")
             winsound.MessageBeep(sound_types.get(system_sound, winsound.MB_ICONASTERISK))
         except (OSError, RuntimeError) as error:
