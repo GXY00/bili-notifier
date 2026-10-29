@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from crash_logging import install_crash_logging
+
+install_crash_logging()
+
 import qrcode
 import requests
 import requests.utils as request_utils
